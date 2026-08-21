@@ -573,6 +573,7 @@ fn draw_row(
     }
 
     let mut x = rect.left() + 10.0;
+    let content_right = draw_copied_at(ui, rect, row.created_at);
     if row.kind == ClipKind::Image {
         if response.rect.is_positive() && ui.is_rect_visible(rect) {
             if let Some(tex) = texture_for(ctx, textures, row) {
@@ -589,7 +590,8 @@ fn draw_row(
             }
         }
         x += 40.0;
-        ui.painter().text(
+        let clip = Rect::from_min_max(Pos2::new(x, rect.min.y), Pos2::new(content_right, rect.max.y));
+        ui.painter().with_clip_rect(clip).text(
             Pos2::new(x, rect.center().y),
             egui::Align2::LEFT_CENTER,
             if row.text.is_empty() {
@@ -602,7 +604,8 @@ fn draw_row(
         );
     } else {
         let preview = one_line(&row.text);
-        ui.painter().text(
+        let clip = Rect::from_min_max(Pos2::new(x, rect.min.y), Pos2::new(content_right, rect.max.y));
+        ui.painter().with_clip_rect(clip).text(
             Pos2::new(x, rect.center().y),
             egui::Align2::LEFT_CENTER,
             preview,
@@ -753,6 +756,37 @@ fn one_line(text: &str) -> String {
         format!("{trimmed}...")
     } else {
         line.to_string()
+    }
+}
+
+fn draw_copied_at(ui: &Ui, rect: Rect, created_at: i64) -> f32 {
+    let when = format_copied_at(created_at);
+    if when.is_empty() {
+        return rect.right() - 8.0;
+    }
+    let font = FontId::proportional(11.0);
+    let galley = ui.fonts(|f| f.layout_no_wrap(when, font, MUTE));
+    let width = galley.size().x;
+    let pos = Pos2::new(
+        rect.right() - 10.0 - width,
+        rect.center().y - galley.size().y * 0.5,
+    );
+    ui.painter().galley(pos, galley, MUTE);
+    pos.x - 8.0
+}
+
+fn format_copied_at(ts: i64) -> String {
+    let utc = if ts.abs() > 1_000_000_000_000_000 {
+        Some(chrono::DateTime::from_timestamp_nanos(ts))
+    } else {
+        chrono::DateTime::from_timestamp_micros(ts)
+    };
+    match utc {
+        Some(dt) => dt
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M")
+            .to_string(),
+        None => String::new(),
     }
 }
 

@@ -34,6 +34,7 @@ pub struct ListRow {
     pub kind: ClipKind,
     pub text: String,
     pub thumb_png: Option<Vec<u8>>,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -142,7 +143,7 @@ impl Store {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, kind, text, thumb_png
+                "SELECT id, kind, text, thumb_png, created_at
                  FROM clips
                  ORDER BY created_at DESC, id DESC
                  LIMIT ?1",
@@ -158,7 +159,7 @@ impl Store {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, kind, text, thumb_png
+                "SELECT id, kind, text, thumb_png, created_at
                  FROM clips
                  WHERE kind = 'image'
                  ORDER BY created_at DESC, id DESC
@@ -175,7 +176,7 @@ impl Store {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT clips.id, clips.kind, clips.text, clips.thumb_png
+                "SELECT clips.id, clips.kind, clips.text, clips.thumb_png, clips.created_at
                  FROM clips
                  JOIN clips_fts ON clips_fts.rowid = clips.id
                  WHERE clips_fts MATCH ?1
@@ -228,6 +229,7 @@ fn row_to_list(r: &rusqlite::Row<'_>) -> rusqlite::Result<ListRow> {
         kind: ClipKind::parse(&kind),
         text: text.unwrap_or_default(),
         thumb_png: r.get(3)?,
+        created_at: r.get(4)?,
     })
 }
 

@@ -18,6 +18,7 @@ winresource = "0.1"
 [dependencies]
 arboard = "3"
 blake3 = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 directories = "6"
 eframe = { version = "0.32", default-features = false, features = ["glow", "default_fonts"] }
 fuzzy-matcher = "0.3"
