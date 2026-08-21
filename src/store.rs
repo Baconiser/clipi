@@ -68,6 +68,35 @@ impl Store {
         Ok(())
     }
 
+    pub fn palette_pos(&self) -> Result<Option<(f32, f32)>, String> {
+        self.conn
+            .query_row(
+                "SELECT palette_x, palette_y FROM window_state WHERE id = 1",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, f64>(0)? as f32,
+                        r.get::<_, f64>(1)? as f32,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(db_err)
+    }
+
+    pub fn set_palette_pos(&self, x: f32, y: f32) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT INTO window_state (id, palette_x, palette_y) VALUES (1, ?1, ?2)
+                 ON CONFLICT(id) DO UPDATE SET
+                    palette_x = excluded.palette_x,
+                    palette_y = excluded.palette_y",
+                params![x as f64, y as f64],
+            )
+            .map_err(db_err)?;
+        Ok(())
+    }
+
     pub fn upsert(
         &self,
         kind: ClipKind,
@@ -273,6 +302,11 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
             INSERT INTO clips_fts(clips_fts, rowid, text) VALUES('delete', old.id, old.text);
             INSERT INTO clips_fts(rowid, text) VALUES (new.id, new.text);
         END;
+        CREATE TABLE IF NOT EXISTS window_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            palette_x REAL NOT NULL,
+            palette_y REAL NOT NULL
+        );
         ",
     )
     .map_err(db_err)
@@ -362,6 +396,18 @@ mod tests {
         let recent = store.list_recent(80).unwrap();
         assert!(recent.len() <= 10);
 
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn palette_pos_roundtrip() {
+        let path = temp_db();
+        let store = Store::open(&path).expect("open");
+        assert_eq!(store.palette_pos().unwrap(), None);
+        store.set_palette_pos(120.5, 80.25).unwrap();
+        assert_eq!(store.palette_pos().unwrap(), Some((120.5, 80.25)));
+        store.set_palette_pos(-12.0, 400.0).unwrap();
+        assert_eq!(store.palette_pos().unwrap(), Some((-12.0, 400.0)));
         let _ = std::fs::remove_file(path);
     }
 }

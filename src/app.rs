@@ -62,6 +62,7 @@ pub struct ClipiApp {
     visible: bool,
     boot_frames: u8,
     just_opened: bool,
+    palette_had_focus: bool,
     quitting: bool,
     settings_open: bool,
     settings_draft: Settings,
@@ -171,6 +172,7 @@ impl ClipiApp {
             visible: false,
             boot_frames: 0,
             just_opened: false,
+            palette_had_focus: false,
             quitting: false,
             settings_open: false,
             settings_draft: Settings::default(),
@@ -187,6 +189,7 @@ impl ClipiApp {
         self.settings_open = false;
         self.visible = true;
         self.just_opened = true;
+        self.palette_had_focus = false;
         self.query.clear();
         self.last_search.clear();
         self.search_dirty_at = None;
@@ -201,11 +204,7 @@ impl ClipiApp {
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
         ctx.send_viewport_cmd(ViewportCommand::Title("clipi".into()));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
-        let saved = self.settings.read().ok().and_then(|s| match (s.palette_x, s.palette_y) {
-            (Some(x), Some(y)) => Some(Pos2::new(x, y)),
-            _ => None,
-        });
-        place_palette(ctx, PALETTE_SIZE, saved);
+        place_palette(ctx, PALETTE_SIZE, self.load_palette_pos());
     }
 
     fn hide_palette(&mut self, ctx: &egui::Context) {
@@ -389,6 +388,20 @@ impl ClipiApp {
         self.settings_error = None;
     }
 
+    fn load_palette_pos(&self) -> Option<Pos2> {
+        if let Ok(Some((x, y))) = self.store.palette_pos() {
+            return Some(Pos2::new(x, y));
+        }
+        let from_config = self.settings.read().ok().and_then(|s| match (s.palette_x, s.palette_y) {
+            (Some(x), Some(y)) => Some(Pos2::new(x, y)),
+            _ => None,
+        })?;
+        if let Err(err) = self.store.set_palette_pos(from_config.x, from_config.y) {
+            eprintln!("clipi: migrate palette position failed: {err}");
+        }
+        Some(from_config)
+    }
+
     fn remember_palette_pos(&self, ctx: &egui::Context) {
         let Some(rect) = ctx.input(|i| i.viewport().outer_rect) else {
             return;
@@ -396,14 +409,22 @@ impl ClipiApp {
         if !rect.is_positive() {
             return;
         }
+        let x = rect.min.x;
+        let y = rect.min.y;
+        let unchanged_db = matches!(self.store.palette_pos(), Ok(Some((ox, oy))) if ox == x && oy == y);
+        if !unchanged_db {
+            if let Err(err) = self.store.set_palette_pos(x, y) {
+                eprintln!("clipi: save palette position failed: {err}");
+            }
+        }
         let Ok(mut settings) = self.settings.write() else {
             return;
         };
-        if settings.palette_x == Some(rect.min.x) && settings.palette_y == Some(rect.min.y) {
+        if settings.palette_x == Some(x) && settings.palette_y == Some(y) {
             return;
         }
-        settings.palette_x = Some(rect.min.x);
-        settings.palette_y = Some(rect.min.y);
+        settings.palette_x = Some(x);
+        settings.palette_y = Some(y);
         if let Err(err) = settings.save() {
             eprintln!("clipi: save palette position failed: {err}");
         }
@@ -435,6 +456,15 @@ impl App for ClipiApp {
         if close_requested && !self.quitting && !self.win.is_exiting() {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             self.hide_palette(ctx);
+        }
+
+        if self.visible && !self.settings_open && self.boot_frames >= 3 && !self.quitting {
+            let focused = ctx.input(|i| i.viewport().focused.unwrap_or(i.focused));
+            if focused {
+                self.palette_had_focus = true;
+            } else if self.palette_had_focus {
+                self.hide_palette(ctx);
+            }
         }
 
         if let Some(at) = self.search_dirty_at {
