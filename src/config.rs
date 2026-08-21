@@ -17,6 +17,8 @@ pub struct Settings {
     pub max_db_mb: u32,
     #[serde(default)]
     pub db_path: PathBuf,
+    #[serde(default = "default_hotkey")]
+    pub hotkey: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub palette_x: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -31,12 +33,17 @@ fn default_max_db_mb() -> u32 {
     80
 }
 
+fn default_hotkey() -> String {
+    crate::hotkey::DEFAULT.to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             max_entries: default_max_entries(),
             max_db_mb: default_max_db_mb(),
             db_path: default_db_path(),
+            hotkey: default_hotkey(),
             palette_x: None,
             palette_y: None,
         }
@@ -78,6 +85,9 @@ impl Settings {
     pub fn sanitize(&mut self) {
         self.max_entries = self.max_entries.clamp(MIN_ENTRIES, MAX_ENTRIES);
         self.max_db_mb = self.max_db_mb.clamp(MIN_DB_MB, MAX_DB_MB);
+        if crate::hotkey::parse(&self.hotkey).is_err() {
+            self.hotkey = default_hotkey();
+        }
     }
 }
 

@@ -12,6 +12,7 @@ use eframe::egui::{
 use eframe::{App, CreationContext};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use tray_icon::menu::MenuEvent;
 use tray_icon::TrayIconEvent;
@@ -52,7 +53,9 @@ pub struct ClipiApp {
     settings: Arc<RwLock<Settings>>,
     store: Store,
     watcher_tx: Sender<WatcherCmd>,
-    _hotkeys: GlobalHotKeyManager,
+    hotkeys: GlobalHotKeyManager,
+    registered_hotkey: Option<HotKey>,
+    hotkey_capture: bool,
     _tray: TrayHandles,
     query: String,
     last_search: String,
@@ -81,9 +84,16 @@ impl ClipiApp {
         let watcher_tx = clipboard::start(Arc::clone(&settings), cc.egui_ctx.clone())?;
 
         let hotkeys = GlobalHotKeyManager::new().map_err(|e| e.to_string())?;
-        if let Err(err) = hotkey::register_alt_c(&hotkeys) {
-            eprintln!("clipi: hotkey Alt+C failed: {err}");
-        }
+        let registered_hotkey = {
+            let raw = settings.read().unwrap().hotkey.clone();
+            match hotkey::register(&hotkeys, &raw) {
+                Ok(hk) => Some(hk),
+                Err(err) => {
+                    eprintln!("clipi: hotkey {raw} failed: {err}");
+                    None
+                }
+            }
+        };
 
         let tray = tray::build()?;
         let show_id = tray.show_id.clone();
@@ -162,7 +172,9 @@ impl ClipiApp {
             settings,
             store,
             watcher_tx,
-            _hotkeys: hotkeys,
+            hotkeys,
+            registered_hotkey,
+            hotkey_capture: false,
             _tray: tray,
             query: String::new(),
             last_search: String::new(),
@@ -208,6 +220,9 @@ impl ClipiApp {
     }
 
     fn hide_palette(&mut self, ctx: &egui::Context) {
+        if self.hotkey_capture {
+            self.stop_hotkey_capture();
+        }
         if self.visible && !self.settings_open {
             self.remember_palette_pos(ctx);
         }
@@ -233,11 +248,12 @@ impl ClipiApp {
             self.settings_draft = s.clone();
         }
         self.settings_error = None;
+        self.hotkey_capture = false;
         self.settings_open = true;
         self.visible = true;
         macos::bring_to_front();
         self.win.show();
-        let size = Vec2::new(520.0, 300.0);
+        let size = Vec2::new(520.0, 360.0);
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(ViewportCommand::Decorations(true));
@@ -328,7 +344,11 @@ impl ClipiApp {
             .unwrap_or_default();
         for cmd in queued {
             match cmd {
-                UiCmd::Toggle => self.toggle_palette(ctx),
+                UiCmd::Toggle => {
+                    if !self.hotkey_capture {
+                        self.toggle_palette(ctx);
+                    }
+                }
                 UiCmd::Show => self.show_palette(ctx),
                 UiCmd::Settings => self.open_settings(ctx),
                 UiCmd::Quit => {
@@ -347,6 +367,14 @@ impl ClipiApp {
         let new_path = self.settings_draft.db_path.clone();
         if new_path.as_os_str().is_empty() {
             self.settings_error = Some("Database path is empty.".into());
+            return;
+        }
+        if self.hotkey_capture {
+            self.hotkey_capture = false;
+        }
+        let hotkey_raw = self.settings_draft.hotkey.clone();
+        if let Err(err) = self.apply_hotkey(&hotkey_raw) {
+            self.settings_error = Some(format!("Could not use that hotkey: {err}"));
             return;
         }
         if let Ok(s) = self.settings.read() {
@@ -386,6 +414,52 @@ impl ClipiApp {
         self.reload_results();
         self.hide_palette(ctx);
         self.settings_error = None;
+    }
+
+    fn start_hotkey_capture(&mut self) {
+        self.hotkey_capture = true;
+        if let Some(hk) = self.registered_hotkey.take() {
+            hotkey::unregister(&self.hotkeys, hk);
+        }
+    }
+
+    fn stop_hotkey_capture(&mut self) {
+        self.hotkey_capture = false;
+        let raw = self
+            .settings
+            .read()
+            .ok()
+            .map(|s| s.hotkey.clone())
+            .unwrap_or_else(|| hotkey::DEFAULT.to_string());
+        if let Err(err) = self.apply_hotkey(&raw) {
+            eprintln!("clipi: restore hotkey failed: {err}");
+        }
+    }
+
+    fn apply_hotkey(&mut self, raw: &str) -> Result<(), String> {
+        let next = hotkey::parse(raw)?;
+        if self.registered_hotkey == Some(next) {
+            return Ok(());
+        }
+        let previous = self.registered_hotkey;
+        if let Some(old) = previous {
+            hotkey::unregister(&self.hotkeys, old);
+            self.registered_hotkey = None;
+        }
+        match self.hotkeys.register(next) {
+            Ok(()) => {
+                self.registered_hotkey = Some(next);
+                Ok(())
+            }
+            Err(err) => {
+                if let Some(old) = previous {
+                    if self.hotkeys.register(old).is_ok() {
+                        self.registered_hotkey = Some(old);
+                    }
+                }
+                Err(err.to_string())
+            }
+        }
     }
 
     fn load_palette_pos(&self) -> Option<Pos2> {
@@ -676,7 +750,16 @@ fn prune_textures(textures: &mut HashMap<i64, TextureHandle>) {
 }
 
 fn draw_settings(app: &mut ClipiApp, ctx: &egui::Context) {
-    if ctx.input(|i| i.key_pressed(Key::Escape)) {
+    if app.hotkey_capture {
+        match hotkey::poll_capture(ctx) {
+            hotkey::Capture::Combo(combo) => {
+                app.settings_draft.hotkey = combo.to_string();
+                app.stop_hotkey_capture();
+            }
+            hotkey::Capture::Cancel => app.stop_hotkey_capture(),
+            hotkey::Capture::None => {}
+        }
+    } else if ctx.input(|i| i.key_pressed(Key::Escape)) {
         app.hide_palette(ctx);
         return;
     }
@@ -701,6 +784,39 @@ fn draw_settings(app: &mut ClipiApp, ctx: &egui::Context) {
                         .speed(1),
                 );
             });
+            ui.add_space(6.0);
+            ui.label(RichText::new("Hotkey").color(MUTE).small());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Open palette").color(INK));
+                let label = if app.hotkey_capture {
+                    "Press a shortcut...".to_string()
+                } else {
+                    hotkey::display_label(&app.settings_draft.hotkey)
+                };
+                let response = ui.add_sized(
+                    Vec2::new(200.0, 24.0),
+                    egui::Button::new(
+                        RichText::new(label).color(if app.hotkey_capture { MARK } else { INK }),
+                    )
+                    .fill(FIELD)
+                    .stroke(Stroke::new(
+                        1.0,
+                        if app.hotkey_capture { MARK } else { RULE },
+                    )),
+                );
+                if response.clicked() {
+                    if app.hotkey_capture {
+                        app.stop_hotkey_capture();
+                    } else {
+                        app.start_hotkey_capture();
+                    }
+                }
+            });
+            ui.label(
+                RichText::new("Click the field, then press the shortcut. Esc cancels.")
+                    .color(MUTE)
+                    .small(),
+            );
             ui.add_space(6.0);
             ui.label(RichText::new("Database").color(MUTE).small());
             ui.horizontal(|ui| {
