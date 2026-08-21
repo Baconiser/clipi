@@ -10,6 +10,7 @@ pub struct Handle {
     #[allow(dead_code)]
     hwnd: Arc<AtomicIsize>,
     shown: Arc<AtomicBool>,
+    exiting: Arc<AtomicBool>,
 }
 
 impl Handle {
@@ -17,6 +18,7 @@ impl Handle {
         Self {
             hwnd: Arc::new(AtomicIsize::new(0)),
             shown: Arc::new(AtomicBool::new(false)),
+            exiting: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -67,6 +69,26 @@ impl Handle {
                 return;
             }
             ShowWindow(hwnd as HWND, SW_HIDE);
+        }
+    }
+
+    pub fn is_exiting(&self) -> bool {
+        self.exiting.load(Ordering::SeqCst)
+    }
+
+    pub fn quit(&self) {
+        self.exiting.store(true, Ordering::SeqCst);
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::Foundation::HWND;
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                PostMessageW, PostQuitMessage, WM_CLOSE,
+            };
+            let hwnd = self.hwnd.load(Ordering::SeqCst);
+            if hwnd != 0 {
+                PostMessageW(hwnd as HWND, WM_CLOSE, 0, 0);
+            }
+            PostQuitMessage(0);
         }
     }
 }

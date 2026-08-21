@@ -122,7 +122,10 @@ impl ClipiApp {
                     wake_window(&ctx, &win_h);
                 } else if event.id == quit_id {
                     q.push(UiCmd::Quit);
+                    ctx.send_viewport_cmd(ViewportCommand::Close);
                     ctx.request_repaint();
+                    win_h.quit();
+                    macos::terminate();
                 }
             } else {
                 ctx.request_repaint();
@@ -326,6 +329,8 @@ impl ClipiApp {
                     self.quitting = true;
                     let _ = self.watcher_tx.send(WatcherCmd::Shutdown);
                     ctx.send_viewport_cmd(ViewportCommand::Close);
+                    self.win.quit();
+                    macos::terminate();
                 }
             }
         }
@@ -396,7 +401,7 @@ impl App for ClipiApp {
         }
 
         let close_requested = ctx.input(|i| i.viewport().close_requested());
-        if close_requested && !self.quitting {
+        if close_requested && !self.quitting && !self.win.is_exiting() {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             self.hide_palette(ctx);
         }

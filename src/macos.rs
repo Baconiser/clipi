@@ -30,6 +30,14 @@ pub fn resign_accessory() {
 pub fn resign_accessory() {}
 
 #[cfg(target_os = "macos")]
+pub fn terminate() {
+    let _ = objc2::exception::catch(terminate_inner);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn terminate() {}
+
+#[cfg(target_os = "macos")]
 fn set_accessory_inner() {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
@@ -55,4 +63,15 @@ fn bring_to_front_inner() {
     // when nothing is already focused.
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
+}
+
+#[cfg(target_os = "macos")]
+fn terminate_inner() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    NSApplication::sharedApplication(mtm).terminate(None);
 }
