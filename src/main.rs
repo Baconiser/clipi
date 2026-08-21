@@ -8,6 +8,7 @@ mod icon;
 mod macos;
 mod store;
 mod tray;
+mod win;
 
 use eframe::egui::{Vec2, ViewportBuilder, WindowLevel};
 use eframe::{NativeOptions, Renderer};

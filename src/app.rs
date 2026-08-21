@@ -24,6 +24,7 @@ use crate::hotkey;
 use crate::macos;
 use crate::store::{ClipBody, ClipKind, ListRow, Store};
 use crate::tray::{self, TrayHandles};
+use crate::win;
 
 const PALETTE_SIZE: Vec2 = Vec2::new(440.0, 560.0);
 const RECENT_LIMIT: u32 = 80;
@@ -67,6 +68,7 @@ pub struct ClipiApp {
     settings_error: Option<String>,
     textures: HashMap<i64, TextureHandle>,
     ui_cmds: Arc<Mutex<Vec<UiCmd>>>,
+    win: win::Handle,
 }
 
 impl ClipiApp {
@@ -87,34 +89,47 @@ impl ClipiApp {
         let settings_id = tray.settings_id.clone();
         let quit_id = tray.quit_id.clone();
         let ui_cmds = Arc::new(Mutex::new(Vec::new()));
+        let win = win::Handle::new();
+        win.capture(cc);
 
-        // Handlers run inside Objective-C. Only enqueue + wake egui.
-        // set_event_handler steals the crate channel, so we keep our own.
+        // Handlers must not call AppKit. On Windows they must ShowWindow here
+        // so the hidden eframe window wakes and can take foreground.
         let cmds = Arc::clone(&ui_cmds);
+        let win_h = win.clone();
         let ctx = cc.egui_ctx.clone();
         GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
             if event.state == HotKeyState::Pressed {
                 if let Ok(mut q) = cmds.lock() {
                     q.push(UiCmd::Toggle);
                 }
+                if !win_h.is_shown() {
+                    wake_window(&ctx, &win_h);
+                } else {
+                    ctx.request_repaint();
+                }
             }
-            ctx.request_repaint();
         }));
         let cmds = Arc::clone(&ui_cmds);
+        let win_h = win.clone();
         let ctx = cc.egui_ctx.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
             if let Ok(mut q) = cmds.lock() {
                 if event.id == show_id {
                     q.push(UiCmd::Show);
+                    wake_window(&ctx, &win_h);
                 } else if event.id == settings_id {
                     q.push(UiCmd::Settings);
+                    wake_window(&ctx, &win_h);
                 } else if event.id == quit_id {
                     q.push(UiCmd::Quit);
+                    ctx.request_repaint();
                 }
+            } else {
+                ctx.request_repaint();
             }
-            ctx.request_repaint();
         }));
         let cmds = Arc::clone(&ui_cmds);
+        let win_h = win.clone();
         let ctx = cc.egui_ctx.clone();
         TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
             #[cfg(not(target_os = "macos"))]
@@ -128,11 +143,13 @@ impl ClipiApp {
                     if let Ok(mut q) = cmds.lock() {
                         q.push(UiCmd::Show);
                     }
+                    wake_window(&ctx, &win_h);
+                    return;
                 }
             }
             #[cfg(target_os = "macos")]
             {
-                let _ = (&event, &cmds);
+                let _ = (&event, &cmds, &win_h);
             }
             ctx.request_repaint();
         }));
@@ -157,6 +174,7 @@ impl ClipiApp {
             settings_error: None,
             textures: HashMap::new(),
             ui_cmds,
+            win,
         };
         app.reload_results();
         Ok(app)
@@ -172,6 +190,7 @@ impl ClipiApp {
         self.selected = 0;
         self.reload_results();
         macos::bring_to_front();
+        self.win.show();
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(ViewportCommand::Decorations(false));
@@ -186,6 +205,7 @@ impl ClipiApp {
         self.visible = false;
         self.settings_open = false;
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+        self.win.hide();
         if self.boot_frames >= 3 {
             macos::resign_accessory();
         }
@@ -207,6 +227,7 @@ impl ClipiApp {
         self.settings_open = true;
         self.visible = true;
         macos::bring_to_front();
+        self.win.show();
         let size = Vec2::new(520.0, 300.0);
         ctx.send_viewport_cmd(ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
@@ -358,7 +379,8 @@ impl App for ClipiApp {
         PAPER.to_normalized_gamma_f32()
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.win.capture(frame);
         apply_theme(ctx);
         self.poll_events(ctx);
 
@@ -646,6 +668,12 @@ fn draw_settings(app: &mut ClipiApp, ctx: &egui::Context) {
                     app.hide_palette(ctx);
                 }
             });
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(format!("clipi {}", env!("CARGO_PKG_VERSION")))
+                    .color(MUTE)
+                    .small(),
+            );
         });
 }
 
@@ -696,6 +724,14 @@ fn center_on_screen(ctx: &egui::Context, size: Vec2) {
         ((screen.y - size.y) * 0.32).max(0.0),
     );
     ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
+}
+
+fn wake_window(ctx: &egui::Context, win: &win::Handle) {
+    win.show();
+    ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+    ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd(ViewportCommand::Focus);
+    ctx.request_repaint();
 }
 
 fn apply_theme(ctx: &egui::Context) {
