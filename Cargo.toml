@@ -1,0 +1,23 @@
+[package]
+name = "clipi"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal clipboard history manager"
+
+[dependencies]
+arboard = "3"
+blake3 = "1"
+directories = "6"
+eframe = { version = "0.32", default-features = false, features = ["glow", "default_fonts"] }
+fuzzy-matcher = "0.3"
+global-hotkey = "0.6"
+image = { version = "0.25", default-features = false, features = ["png"] }
+rfd = "0.15"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tray-icon = "0.19"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", features = ["exception"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSRunningApplication"] }
