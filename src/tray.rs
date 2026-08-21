@@ -44,3 +44,6 @@ pub fn build() -> Result<TrayHandles, String> {
     })
 }
 
+pub fn force_exit() -> ! {
+    std::process::exit(0);
+}

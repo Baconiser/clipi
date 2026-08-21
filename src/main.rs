@@ -33,7 +33,7 @@ fn main() -> eframe::Result<()> {
         viewport,
         persist_window: false,
         renderer: Renderer::Glow,
-        centered: true,
+        centered: false,
         ..NativeOptions::default()
     };
 

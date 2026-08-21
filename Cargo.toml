@@ -1,6 +1,6 @@
 [package]
 name = "clipi"
-version = "0.1.4"
+version = "0.1.6"
 edition = "2021"
 description = "Minimal clipboard history manager"
 repository = "https://github.com/Baconiser/clipi"

@@ -73,6 +73,8 @@ pub struct ClipiApp {
     textures: HashMap<i64, TextureHandle>,
     ui_cmds: Arc<Mutex<Vec<UiCmd>>>,
     win: win::Handle,
+    last_pos: Option<Pos2>,
+    place_frames: u8,
 }
 
 impl ClipiApp {
@@ -124,22 +126,24 @@ impl ClipiApp {
         let win_h = win.clone();
         let ctx = cc.egui_ctx.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-            if let Ok(mut q) = cmds.lock() {
-                if event.id == show_id {
-                    q.push(UiCmd::Show);
-                    wake_window(&ctx, &win_h);
-                } else if event.id == settings_id {
-                    q.push(UiCmd::Settings);
-                    wake_window(&ctx, &win_h);
-                } else if event.id == quit_id {
-                    q.push(UiCmd::Quit);
-                    ctx.send_viewport_cmd(ViewportCommand::Close);
-                    ctx.request_repaint();
-                    win_h.quit();
-                    macos::terminate();
-                }
+            let cmd = if event.id == show_id {
+                Some(UiCmd::Show)
+            } else if event.id == settings_id {
+                Some(UiCmd::Settings)
+            } else if event.id == quit_id {
+                Some(UiCmd::Quit)
             } else {
-                ctx.request_repaint();
+                None
+            };
+            match cmd {
+                Some(UiCmd::Quit) => tray::force_exit(),
+                Some(other) => {
+                    if let Ok(mut q) = cmds.lock() {
+                        q.push(other);
+                    }
+                    wake_window(&ctx, &win_h);
+                }
+                None => ctx.request_repaint(),
             }
         }));
         let cmds = Arc::clone(&ui_cmds);
@@ -192,7 +196,10 @@ impl ClipiApp {
             textures: HashMap::new(),
             ui_cmds,
             win,
+            last_pos: None,
+            place_frames: 0,
         };
+        app.last_pos = app.load_palette_pos();
         app.reload_results();
         Ok(app)
     }
@@ -216,7 +223,11 @@ impl ClipiApp {
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
         ctx.send_viewport_cmd(ViewportCommand::Title("clipi".into()));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
-        place_palette(ctx, PALETTE_SIZE, self.load_palette_pos());
+        if self.last_pos.is_none() {
+            self.last_pos = self.load_palette_pos();
+        }
+        self.place_frames = 8;
+        place_palette(ctx, PALETTE_SIZE, self.last_pos);
     }
 
     fn hide_palette(&mut self, ctx: &egui::Context) {
@@ -351,13 +362,7 @@ impl ClipiApp {
                 }
                 UiCmd::Show => self.show_palette(ctx),
                 UiCmd::Settings => self.open_settings(ctx),
-                UiCmd::Quit => {
-                    self.quitting = true;
-                    let _ = self.watcher_tx.send(WatcherCmd::Shutdown);
-                    ctx.send_viewport_cmd(ViewportCommand::Close);
-                    self.win.quit();
-                    macos::terminate();
-                }
+                UiCmd::Quit => tray::force_exit(),
             }
         }
     }
@@ -464,10 +469,12 @@ impl ClipiApp {
 
     fn load_palette_pos(&self) -> Option<Pos2> {
         if let Ok(Some((x, y))) = self.store.palette_pos() {
-            return Some(Pos2::new(x, y));
+            if x.abs() > 1.0 || y.abs() > 1.0 {
+                return Some(Pos2::new(x, y));
+            }
         }
         let from_config = self.settings.read().ok().and_then(|s| match (s.palette_x, s.palette_y) {
-            (Some(x), Some(y)) => Some(Pos2::new(x, y)),
+            (Some(x), Some(y)) if x.abs() > 1.0 || y.abs() > 1.0 => Some(Pos2::new(x, y)),
             _ => None,
         })?;
         if let Err(err) = self.store.set_palette_pos(from_config.x, from_config.y) {
@@ -477,14 +484,15 @@ impl ClipiApp {
     }
 
     fn remember_palette_pos(&self, ctx: &egui::Context) {
-        let Some(rect) = ctx.input(|i| i.viewport().outer_rect) else {
+        let pos = self.last_pos.or_else(|| {
+            ctx.input(|i| i.viewport().outer_rect.filter(|r| r.width() > 32.0 && r.height() > 32.0))
+                .map(|r| r.min)
+        });
+        let Some(pos) = pos else {
             return;
         };
-        if !rect.is_positive() {
-            return;
-        }
-        let x = rect.min.x;
-        let y = rect.min.y;
+        let x = pos.x;
+        let y = pos.y;
         let unchanged_db = matches!(self.store.palette_pos(), Ok(Some((ox, oy))) if ox == x && oy == y);
         if !unchanged_db {
             if let Err(err) = self.store.set_palette_pos(x, y) {
@@ -503,6 +511,25 @@ impl ClipiApp {
             eprintln!("clipi: save palette position failed: {err}");
         }
     }
+
+    fn track_palette_pos(&mut self, ctx: &egui::Context) {
+        if !self.visible || self.settings_open {
+            return;
+        }
+        if self.place_frames > 0 {
+            if let Some(pos) = self.last_pos {
+                ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
+            }
+            self.place_frames -= 1;
+            ctx.request_repaint();
+            return;
+        }
+        if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
+            if rect.width() > 32.0 && rect.height() > 32.0 {
+                self.last_pos = Some(rect.min);
+            }
+        }
+    }
 }
 
 impl App for ClipiApp {
@@ -514,6 +541,7 @@ impl App for ClipiApp {
         self.win.capture(frame);
         apply_theme(ctx);
         self.poll_events(ctx);
+        self.track_palette_pos(ctx);
 
         if self.boot_frames < 3 {
             self.boot_frames += 1;
@@ -956,24 +984,22 @@ fn draw_move_handle(ui: &mut Ui, ctx: &egui::Context) -> bool {
 }
 
 fn place_palette(ctx: &egui::Context, size: Vec2, saved: Option<Pos2>) {
-    let screen = ctx.input(|i| i.screen_rect());
-    let pos = match saved {
-        Some(pos) if Rect::from_min_size(pos, size).intersects(screen) => pos,
-        _ => Pos2::new(
-            ((screen.width() - size.x) * 0.5).max(0.0) + screen.min.x,
-            ((screen.height() - size.y) * 0.32).max(0.0) + screen.min.y,
-        ),
-    };
+    let pos = saved.unwrap_or_else(|| default_window_pos(ctx, size));
     ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
 }
 
 fn center_on_screen(ctx: &egui::Context, size: Vec2) {
-    let screen = ctx.input(|i| i.screen_rect().size());
-    let pos = Pos2::new(
-        ((screen.x - size.x) * 0.5).max(0.0),
-        ((screen.y - size.y) * 0.32).max(0.0),
-    );
-    ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
+    ctx.send_viewport_cmd(ViewportCommand::OuterPosition(default_window_pos(ctx, size)));
+}
+
+fn default_window_pos(ctx: &egui::Context, size: Vec2) -> Pos2 {
+    let monitor = ctx
+        .input(|i| i.viewport().monitor_size)
+        .unwrap_or(Vec2::new(1280.0, 800.0));
+    Pos2::new(
+        ((monitor.x - size.x) * 0.5).max(0.0),
+        ((monitor.y - size.y) * 0.32).max(0.0),
+    )
 }
 
 fn wake_window(ctx: &egui::Context, win: &win::Handle) {
