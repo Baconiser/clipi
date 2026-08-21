@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Color32, ColorImage, CornerRadius, FontId, Frame, Id, Key, Margin, PointerButton,
-    Pos2, RichText, ScrollArea, Sense, Stroke, TextEdit, TextureHandle, TextureOptions, Ui,
-    Vec2, ViewportCommand,
+    self, Color32, ColorImage, CornerRadius, CursorIcon, FontId, Frame, Id, Key, Margin,
+    PointerButton, Pos2, Rect, RichText, ScrollArea, Sense, Stroke, TextEdit, TextureHandle,
+    TextureOptions, Ui, Vec2, ViewportCommand,
 };
 use eframe::{App, CreationContext};
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -201,10 +201,17 @@ impl ClipiApp {
         ctx.send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
         ctx.send_viewport_cmd(ViewportCommand::Title("clipi".into()));
         ctx.send_viewport_cmd(ViewportCommand::Focus);
-        center_on_screen(ctx, PALETTE_SIZE);
+        let saved = self.settings.read().ok().and_then(|s| match (s.palette_x, s.palette_y) {
+            (Some(x), Some(y)) => Some(Pos2::new(x, y)),
+            _ => None,
+        });
+        place_palette(ctx, PALETTE_SIZE, saved);
     }
 
     fn hide_palette(&mut self, ctx: &egui::Context) {
+        if self.visible && !self.settings_open {
+            self.remember_palette_pos(ctx);
+        }
         self.visible = false;
         self.settings_open = false;
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
@@ -343,6 +350,10 @@ impl ClipiApp {
             self.settings_error = Some("Database path is empty.".into());
             return;
         }
+        if let Ok(s) = self.settings.read() {
+            self.settings_draft.palette_x = s.palette_x;
+            self.settings_draft.palette_y = s.palette_y;
+        }
         let old_path = self
             .settings
             .read()
@@ -376,6 +387,26 @@ impl ClipiApp {
         self.reload_results();
         self.hide_palette(ctx);
         self.settings_error = None;
+    }
+
+    fn remember_palette_pos(&self, ctx: &egui::Context) {
+        let Some(rect) = ctx.input(|i| i.viewport().outer_rect) else {
+            return;
+        };
+        if !rect.is_positive() {
+            return;
+        }
+        let Ok(mut settings) = self.settings.write() else {
+            return;
+        };
+        if settings.palette_x == Some(rect.min.x) && settings.palette_y == Some(rect.min.y) {
+            return;
+        }
+        settings.palette_x = Some(rect.min.x);
+        settings.palette_y = Some(rect.min.y);
+        if let Err(err) = settings.save() {
+            eprintln!("clipi: save palette position failed: {err}");
+        }
     }
 }
 
@@ -454,6 +485,9 @@ fn draw_palette(app: &mut ClipiApp, ctx: &egui::Context) {
         .frame(Frame::NONE.fill(PAPER).inner_margin(Margin::same(12)))
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing = Vec2::new(0.0, 6.0);
+            if draw_move_handle(ui, ctx) {
+                app.remember_palette_pos(ctx);
+            }
             let search_id = Id::new("clipi-search");
             if app.just_opened {
                 ui.memory_mut(|m| m.request_focus(search_id));
@@ -720,6 +754,37 @@ fn one_line(text: &str) -> String {
     } else {
         line.to_string()
     }
+}
+
+fn draw_move_handle(ui: &mut Ui, ctx: &egui::Context) -> bool {
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), 14.0),
+        Sense::click_and_drag(),
+    );
+    let pill = Rect::from_center_size(rect.center(), Vec2::new(36.0, 3.0));
+    ui.painter()
+        .rect_filled(pill, CornerRadius::same(2), MUTE);
+    if response.dragged() {
+        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+    } else if response.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::Grab);
+    }
+    if response.drag_started() {
+        ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+    }
+    response.drag_stopped()
+}
+
+fn place_palette(ctx: &egui::Context, size: Vec2, saved: Option<Pos2>) {
+    let screen = ctx.input(|i| i.screen_rect());
+    let pos = match saved {
+        Some(pos) if Rect::from_min_size(pos, size).intersects(screen) => pos,
+        _ => Pos2::new(
+            ((screen.width() - size.x) * 0.5).max(0.0) + screen.min.x,
+            ((screen.height() - size.y) * 0.32).max(0.0) + screen.min.y,
+        ),
+    };
+    ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos));
 }
 
 fn center_on_screen(ctx: &egui::Context, size: Vec2) {

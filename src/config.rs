@@ -17,6 +17,10 @@ pub struct Settings {
     pub max_db_mb: u32,
     #[serde(default)]
     pub db_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palette_x: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palette_y: Option<f32>,
 }
 
 fn default_max_entries() -> u32 {
@@ -33,6 +37,8 @@ impl Default for Settings {
             max_entries: default_max_entries(),
             max_db_mb: default_max_db_mb(),
             db_path: default_db_path(),
+            palette_x: None,
+            palette_y: None,
         }
     }
 }
